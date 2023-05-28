@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	yaml "gopkg.in/yaml.v2"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +50,10 @@ type SlotInfo struct {
 	SlotsInfo []Slot `json:"slotsInfo"`
 	Token     string `json:"token"`
 	IpAddress string `json:"ipAddress"`
+}
+
+type Config struct {
+	Targets []string `yaml:"targets"`
 }
 
 type Status struct {
@@ -233,12 +239,19 @@ func main() {
 		status: make(map[string]*Status),
 	}
 
-	targets := []string{
-		"192.168.0.20",
-		"192.168.0.183",
+	data, err := os.ReadFile("config.yaml")
+	if err != nil {
+		panic(err)
 	}
 
-	for _, target := range targets {
+	var config Config
+
+	err = yaml.Unmarshal(data, &config)
+	if err != nil {
+		panic(err)
+	}
+
+	for _, target := range config.Targets {
 		go func(target string) {
 			var status SlotInfo
 			status.IpAddress = target
@@ -270,7 +283,7 @@ func main() {
 
 	for {
 		fmt.Print("\033[H\033[2J")
-		for _, target := range targets {
+		for _, target := range config.Targets {
 			statusData := statusCache.Get(target)
 			for _, data := range statusData.SlotsInfo {
 				if data.Status != "DISABLED" {
