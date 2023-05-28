@@ -42,17 +42,9 @@ type Slot struct {
 	TimeRemaining  string   `json:"timeremaining"`
 }
 
-type Response struct {
-	Path  string
-	Value []Slot
-}
-
-type mainResponse interface {
-}
-
-func sendRequest(ipAddress string, url string) (error, string) {
+func sendRequest(ipAddress string, method string, url string) (error, string) {
 	// Create a new HTTP request
-	req, err := http.NewRequest(http.MethodPut, url, nil)
+	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		fmt.Println("Error creating HTTP request:", err)
 		return err, ""
@@ -93,30 +85,30 @@ func sendRequest(ipAddress string, url string) (error, string) {
 }
 
 func startSession(ipAddress string) (error, string) {
-	err, data := sendRequest(ipAddress, "http://"+ipAddress+":7396/api/session")
+	err, data := sendRequest(ipAddress, http.MethodPut, "http://"+ipAddress+":7396/api/session")
 	return err, data
 }
 
 func fahConfigured(ipAddress string, token string) {
-	err, _ := sendRequest(ipAddress, "http://"+ipAddress+":7396/api/configured?sid="+token+"&_=1685187908670")
+	err, _ := sendRequest(ipAddress, http.MethodGet, "http://"+ipAddress+":7396/api/configured?sid="+token+"&_=1685187908670")
 	if err != nil {
 		return
 	}
 }
 
 func fahSetApi(ipAddress string, token string) {
-	err, _ := sendRequest(ipAddress, "http://"+ipAddress+":7396/api/updates/set?sid="+token+"&update_id=1&update_rate=1&update_path=%2Fapi%2Fslots&_=1685187908669")
+	err, _ := sendRequest(ipAddress, http.MethodPut, "http://"+ipAddress+":7396/api/updates/set?sid="+token+"&update_id=1&update_rate=1&update_path=%2Fapi%2Fslots&_=1685187908669")
 	if err != nil {
 		return
 	}
-	err, _ = sendRequest(ipAddress, "http://"+ipAddress+":7396/api/updates/set?sid="+token+"&update_id=0&update_rate=1&update_path=%2Fapi%2Fbasic&_=1685187908670")
+	err, _ = sendRequest(ipAddress, http.MethodPut, "http://"+ipAddress+":7396/api/updates/set?sid="+token+"&update_id=0&update_rate=1&update_path=%2Fapi%2Fbasic&_=1685187908670")
 	if err != nil {
 		return
 	}
 }
 
 func getStatus(ipAddress string, token string) (error, []Slot) {
-	err, body := sendRequest(ipAddress, "http://"+ipAddress+":7396/api/slots?sid="+token+"&_=1685187908670")
+	err, body := sendRequest(ipAddress, http.MethodGet, "http://"+ipAddress+":7396/api/slots?sid="+token+"&_=1685187908670")
 	if err != nil {
 		return err, nil
 	}
@@ -131,10 +123,26 @@ func getStatus(ipAddress string, token string) (error, []Slot) {
 	return nil, responses
 }
 
-func printProgressBar(percent float64) {
+func getBasic(ipAddress string, token string) (error, Basic) {
+	var responses Basic
+	err, body := sendRequest(ipAddress, http.MethodGet, "http://"+ipAddress+":7396/api/basic?sid="+token+"&_=1685187908670")
+	if err != nil {
+		return err, responses
+	}
+
+	err = json.Unmarshal([]byte(body), &responses)
+	if err != nil {
+		fmt.Println("Error unmarshalling JSON:", err)
+		return err, responses
+	}
+
+	return nil, responses
+}
+
+func printProgressBar(percent float64, data Slot, basicInfo Basic, ipAddress string) {
 	totalBars := 50
 	doneBars := int(percent / 2)
-	fmt.Printf("\r[")
+	fmt.Printf("[")
 	for i := 0; i < totalBars; i++ {
 		if i < doneBars {
 			fmt.Print("=")
@@ -143,21 +151,26 @@ func printProgressBar(percent float64) {
 		}
 	}
 	fmt.Print("] ")
-	fmt.Printf("%.2f%%", percent)
+	fmt.Printf(
+		"%.2f%% rig: %15s user: %s team: %d project: %d estimate: %8s ppd: %9s eta: %s",
+		percent,
+		ipAddress,
+		basicInfo.User,
+		basicInfo.Team,
+		data.Project,
+		data.CreditEstimate,
+		data.PPD,
+		data.ETA)
 }
 
-func taskPercentage(data []Slot) (error, float64) {
-	for _, slot := range data {
-		percentStr := strings.TrimRight(slot.PercentDone, "%")
-		percent, err := strconv.ParseFloat(percentStr, 64)
-		if err != nil {
-			fmt.Println("Error parsing percent:", err)
-			return err, 0
-		}
-		return nil, percent
+func taskPercentage(data Slot) (error, float64) {
+	percentStr := strings.TrimRight(data.PercentDone, "%")
+	percent, err := strconv.ParseFloat(percentStr, 64)
+	if err != nil {
+		fmt.Println("Error parsing percent:", err)
+		return err, 0
 	}
-
-	return nil, 0
+	return nil, percent
 }
 
 func main() {
@@ -167,17 +180,51 @@ func main() {
 	}
 	fahConfigured("192.168.0.20", sessionToken)
 	fahSetApi("192.168.0.20", sessionToken)
+	err, basicInfo := getBasic("192.168.0.20", sessionToken)
+	if err != nil {
+		panic(err)
+	}
+
+	err, sessionTokenNotebook := startSession("192.168.0.183")
+	if err != nil {
+		panic(err)
+	}
+	fahConfigured("192.168.0.183", sessionTokenNotebook)
+	fahSetApi("192.168.0.183", sessionTokenNotebook)
+	err, basicInfoNotebook := getBasic("192.168.0.20", sessionToken)
+	if err != nil {
+		panic(err)
+	}
+
 	for {
+		fmt.Print("\033[H\033[2J")
 		err, statusData := getStatus("192.168.0.20", sessionToken)
 		if err != nil {
 			panic(err)
 		}
-		err, percentage := taskPercentage(statusData)
+		for _, data := range statusData {
+			err, percentage := taskPercentage(data)
+			if err != nil {
+				panic(err)
+			}
+			printProgressBar(percentage, data, basicInfo, "192.168.0.20")
+			fmt.Println()
+		}
+
+		err, statusDataNotebook := getStatus("192.168.0.183", sessionTokenNotebook)
 		if err != nil {
 			panic(err)
 		}
-		printProgressBar(percentage)
-
-		time.Sleep(1)
+		for _, data := range statusDataNotebook {
+			if data.Status != "DISABLED" {
+				err, percentageNotebook := taskPercentage(data)
+				if err != nil {
+					panic(err)
+				}
+				printProgressBar(percentageNotebook, data, basicInfoNotebook, "192.168.0.183")
+				fmt.Println()
+			}
+		}
+		time.Sleep(1 * time.Second)
 	}
 }
