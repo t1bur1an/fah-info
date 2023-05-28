@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,6 +41,59 @@ type Slot struct {
 	WaitingOn      string   `json:"waitingon"`
 	NextAttempt    string   `json:"nextattempt"`
 	TimeRemaining  string   `json:"timeremaining"`
+}
+
+type SlotInfo struct {
+	BasicInfo Basic  `json:"basicInfo"`
+	SlotsInfo []Slot `json:"slotsInfo"`
+	Token     string `json:"token"`
+	IpAddress string `json:"ipAddress"`
+}
+
+type Status struct {
+	mu    sync.RWMutex
+	value SlotInfo // MyStruct is the struct type returned by getStatus()
+}
+
+func (s *Status) Set(value SlotInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.value = value
+}
+
+func (s *Status) Get() SlotInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.value
+}
+
+type StatusCache struct {
+	mu     sync.RWMutex
+	status map[string]*Status // map of target ID to Status
+}
+
+func (sc *StatusCache) Set(id string, value SlotInfo) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	if _, ok := sc.status[id]; !ok {
+		sc.status[id] = &Status{}
+	}
+
+	sc.status[id].Set(value)
+}
+
+func (sc *StatusCache) Get(id string) SlotInfo {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+
+	if status, ok := sc.status[id]; ok {
+		return status.Get()
+	}
+
+	return SlotInfo{} // return zero value if there is no status for this ID
 }
 
 func sendRequest(ipAddress string, method string, url string) (error, string) {
@@ -174,55 +228,59 @@ func taskPercentage(data Slot) (error, float64) {
 }
 
 func main() {
-	err, sessionToken := startSession("192.168.0.20")
-	if err != nil {
-		panic(err)
-	}
-	fahConfigured("192.168.0.20", sessionToken)
-	fahSetApi("192.168.0.20", sessionToken)
-	err, basicInfo := getBasic("192.168.0.20", sessionToken)
-	if err != nil {
-		panic(err)
+
+	statusCache := &StatusCache{
+		status: make(map[string]*Status),
 	}
 
-	err, sessionTokenNotebook := startSession("192.168.0.183")
-	if err != nil {
-		panic(err)
+	targets := []string{
+		"192.168.0.20",
+		"192.168.0.183",
 	}
-	fahConfigured("192.168.0.183", sessionTokenNotebook)
-	fahSetApi("192.168.0.183", sessionTokenNotebook)
-	err, basicInfoNotebook := getBasic("192.168.0.20", sessionToken)
-	if err != nil {
-		panic(err)
+
+	for _, target := range targets {
+		go func(target string) {
+			var status SlotInfo
+			status.IpAddress = target
+			err, sessionToken := startSession(status.IpAddress)
+			if err != nil {
+				panic(err)
+			}
+
+			status.Token = sessionToken
+			fahConfigured(status.IpAddress, status.Token)
+			fahSetApi(status.IpAddress, status.Token)
+			err, basicInfo := getBasic(status.IpAddress, status.Token)
+			if err != nil {
+				panic(err)
+			}
+
+			status.BasicInfo = basicInfo
+			for {
+				err, statusData := getStatus(status.IpAddress, status.Token)
+				if err != nil {
+				} else {
+					status.SlotsInfo = statusData
+					statusCache.Set(target, status)
+				}
+				time.Sleep(time.Second * 5) // wait 5 seconds before updating the status again
+			}
+		}(target)
 	}
 
 	for {
 		fmt.Print("\033[H\033[2J")
-		err, statusData := getStatus("192.168.0.20", sessionToken)
-		if err != nil {
-			panic(err)
-		}
-		for _, data := range statusData {
-			err, percentage := taskPercentage(data)
-			if err != nil {
-				panic(err)
-			}
-			printProgressBar(percentage, data, basicInfo, "192.168.0.20")
-			fmt.Println()
-		}
-
-		err, statusDataNotebook := getStatus("192.168.0.183", sessionTokenNotebook)
-		if err != nil {
-			panic(err)
-		}
-		for _, data := range statusDataNotebook {
-			if data.Status != "DISABLED" {
-				err, percentageNotebook := taskPercentage(data)
-				if err != nil {
-					panic(err)
+		for _, target := range targets {
+			statusData := statusCache.Get(target)
+			for _, data := range statusData.SlotsInfo {
+				if data.Status != "DISABLED" {
+					err, percentage := taskPercentage(data)
+					if err != nil {
+						panic(err)
+					}
+					printProgressBar(percentage, data, statusData.BasicInfo, statusData.IpAddress)
+					fmt.Println()
 				}
-				printProgressBar(percentageNotebook, data, basicInfoNotebook, "192.168.0.183")
-				fmt.Println()
 			}
 		}
 		time.Sleep(1 * time.Second)
