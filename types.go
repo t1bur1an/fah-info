@@ -1,7 +1,7 @@
 package main
 
 import (
-  "sync"
+	"sync"
 )
 
 type Basic struct {

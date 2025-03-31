@@ -1,12 +1,12 @@
 package main
 
 import (
-  "io"
-  "fmt"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
-  "net/http"
-	"encoding/json"
 )
 
 func sendRequest(ipAddress string, method string, url string) (error, string) {
